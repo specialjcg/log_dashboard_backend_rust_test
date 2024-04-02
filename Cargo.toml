@@ -1,0 +1,15 @@
+[package]
+name = "log_dashboard_backend_rust"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+#![feature(impl_trait_projections)]
+[dependencies]
+actix-web = "4.0"
+tokio = { version = "1", features = ["full"] }
+tokio-postgres = "0.7"
+regex = "1.5"
+actix-cors = "0.6.4"
+cargo-generate = "=0.10.3"
+chrono="0.4"
