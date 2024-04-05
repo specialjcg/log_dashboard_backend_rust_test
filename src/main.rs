@@ -3,15 +3,15 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use actix_web::{App, HttpResponse, HttpServer, Responder, web};
-use chrono::{DateTime, Local, NaiveDateTime, ParseError, TimeZone, Utc};
+use chrono::{NaiveDateTime, ParseError, TimeZone};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use tokio_postgres::{Client, NoTls, types::ToSql};
-use tokio_postgres::types::Timestamp;
 
 mod test;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn parse_timestamp(timestamp_str: &str) -> Result<SystemTime, ParseError> {
     // Parse the timestamp string
@@ -26,7 +26,7 @@ fn parse_timestamp(timestamp_str: &str) -> Result<SystemTime, ParseError> {
 
     Ok(system_time)
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct LogEntry {
     timestamp: std::time::SystemTime,
     severity: String,
@@ -140,6 +140,39 @@ async fn establish_db_connection() -> Result<Client, tokio_postgres::Error> {
     });
     Ok(client)
 }
+async fn get_logs(client: web::Data<Arc<Client>>) -> impl Responder {
+    // Prepare the SQL statement to select all logs
+    let statement = client.prepare("SELECT timestamp, severity, logger, message FROM logs")
+        .await
+        .expect("Failed to prepare statement");
+
+    // Execute the SQL statement to fetch all logs
+    let rows = client.query(&statement, &[])
+        .await
+        .expect("Failed to execute query");
+
+    // Iterate over the rows and collect log entries
+    let mut log_entries = Vec::new();
+    for row in &rows {
+        let timestamp: std::time::SystemTime = row.get(0);
+        let severity: String = row.get(1);
+        let logger: String = row.get(2);
+        let message: String = row.get(3);
+
+        log_entries.push(LogEntry {
+            timestamp,
+            severity,
+            logger,
+            message,
+        });
+    }
+
+    // Serialize log entries to JSON and return as response
+    let response_body = serde_json::to_string(&log_entries)
+        .expect("Failed to serialize log entries to JSON");
+
+    HttpResponse::Ok().body(response_body)
+}
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -171,6 +204,7 @@ async fn main() -> std::io::Result<()> {
             .data(db_client.clone())
             .service(web::resource("/").route(web::get().to(hello)))
             .service(web::resource("/store_logs").route(web::get().to(store_logs)))
+            .service(web::resource("/logs").route(web::get().to(get_logs)))
     })
         .bind("127.0.0.1:3000")?
         .run()
