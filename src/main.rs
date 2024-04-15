@@ -4,27 +4,39 @@ use std::io::{BufRead, BufReader};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
+use actix_cors::Cors;
 use actix_web::{App, HttpResponse, HttpServer, Responder, web};
-use chrono::{NaiveDateTime, ParseError, TimeZone};
+use chrono::{DateTime, NaiveDateTime, ParseError, ParseResult, Timelike, TimeZone, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio_postgres::{Client, NoTls, types::ToSql};
+struct Row<T>(T);
 
+impl<T> Row<T> {
+    // Assuming `get` method retrieves a value of type `T`
+    fn get(&self, _index: usize) -> T {
+        unimplemented!() // Implementation not provided in the example
+    }
+}
 mod test;
 
 fn parse_timestamp(timestamp_str: &str) -> Result<SystemTime, ParseError> {
     // Parse the timestamp string
-    let naive_date_time = NaiveDateTime::parse_from_str(timestamp_str, "%Y-%m-%d %H:%M:%S,%f")?;
+    let naive_datetime: ParseResult<NaiveDateTime> = NaiveDateTime::parse_from_str(&*timestamp_str.replace(",", "."), "%Y-%m-%d %H:%M:%S%.3f");
+    match naive_datetime {
+        Ok(naive_datetime) => {
+            let milliseconds = naive_datetime.and_utc().timestamp_subsec_millis();
+            let system_time = UNIX_EPOCH + Duration::from_secs(naive_datetime.and_utc().timestamp() as u64)
+                + Duration::from_millis(milliseconds as u64);
+            Ok(system_time)
+        }
+        Err(err) => Err(err),
+    }
 
-    // Convert the NaiveDateTime to SystemTime
-    let seconds = naive_date_time.timestamp();
-    let subsec_nanos = naive_date_time.timestamp_subsec_nanos();
+    // Create a SystemTime instance from components
 
-    // Create a SystemTime instance from seconds and nanoseconds since the Unix epoch
-    let system_time = UNIX_EPOCH + Duration::new(seconds as u64, subsec_nanos);
 
-    Ok(system_time)
+
 }
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct LogEntry {
@@ -33,7 +45,13 @@ struct LogEntry {
     logger: String,
     message: String,
 }
-
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+struct LogReturn {
+    timestamp: String,
+    severity: String,
+    logger: String,
+    message: String,
+}
 impl LogEntry {
     fn parse_log_entry(entry: &str) -> Option<Self> {
         let re = Regex::new(r"^(?P<timestamp>[^ ]+ [^ ]+)(\s+)(?P<severity>[A-Z]+)(\s+)(?P<logger>[^ ]+)(\s+)-(\s+)(?P<message>.*)").unwrap();
@@ -106,7 +124,15 @@ async fn store_logs(client: web::Data<Arc<Client>>) -> impl Responder {
             }
         }
     }
+    let delete_statement = client
+        .prepare("DELETE FROM logs")
+        .await
+        .expect("Failed to prepare delete statement");
 
+    client
+        .execute(&delete_statement, &[])
+        .await
+        .expect("Failed to execute delete statement");
     for entry in &log_entries {
         // Convert NaiveDateTime to DateTime<Utc>
         // Convert NaiveDateTime to String
@@ -140,6 +166,8 @@ async fn establish_db_connection() -> Result<Client, tokio_postgres::Error> {
     });
     Ok(client)
 }
+// Function to convert a Unix timestamp to SystemTime
+
 async fn get_logs(client: web::Data<Arc<Client>>) -> impl Responder {
     // Prepare the SQL statement to select all logs
     let statement = client.prepare("SELECT timestamp, severity, logger, message FROM logs")
@@ -154,7 +182,9 @@ async fn get_logs(client: web::Data<Arc<Client>>) -> impl Responder {
     // Iterate over the rows and collect log entries
     let mut log_entries = Vec::new();
     for row in &rows {
-        let timestamp: std::time::SystemTime = row.get(0);
+        // Convert the row value to SystemTime
+
+        let timestamp: SystemTime =row.get(0) ;
         let severity: String = row.get(1);
         let logger: String = row.get(2);
         let message: String = row.get(3);
@@ -193,15 +223,20 @@ async fn main() -> std::io::Result<()> {
 
     // Wrap the client in an Arc to allow sharing across threads
     let db_client = Arc::new(client);
+    // Configure CORS
+    let cors = Cors::default()
+        .allow_any_origin();
 
     // Start the Actix web server
     HttpServer::new(move || {
         // Clone the Arc containing the client for each worker
         let db_client = db_client.clone();
-
+        // Configure CORS to allow any origin
+        let cors = Cors::permissive();
         App::new()
             // Provide the client to each request handler
             .data(db_client.clone())
+            .wrap(cors)
             .service(web::resource("/").route(web::get().to(hello)))
             .service(web::resource("/store_logs").route(web::get().to(store_logs)))
             .service(web::resource("/logs").route(web::get().to(get_logs)))
